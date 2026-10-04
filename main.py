@@ -128,21 +128,31 @@ class NoteTaker(Gtk.ApplicationWindow):
         self.base_layout.set_margin_start(15)
         self.base_layout.set_margin_end(15)
 
+        # -------------------------- Layouts
         # 1. Sidebar Layout
         self.sidebar_layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.sidebar_layout.set_size_request(200, -1)
 
-        sidebar_title = Gtk.Label(label="<b>Your Notes (.md)</b>")
+        sidebar_title = Gtk.Label(label="<b>Notes</b>")
         sidebar_title.set_use_markup(True)
         sidebar_title.set_xalign(0.0)
         self.sidebar_layout.append(sidebar_title)
 
+        # search
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_placeholder_text("Search notes...")
+        self.search_entry.connect('search-changed', self.on_search_changed)
+        self.sidebar_layout.append(self.search_entry)
+
+        # listbox with scroll
         self.list_scroll = Gtk.ScrolledWindow()
         self.list_scroll.set_vexpand(True)
-        
+
+        # listbox for notes
         self.note_list_box = Gtk.ListBox()
+        self.note_list_box.set_filter_func(self.filter_notes_by_query)
         self.note_list_box.connect('row-selected', self.on_note_selected)
-        
+
         self.list_scroll.set_child(self.note_list_box)
         self.sidebar_layout.append(self.list_scroll)
         
@@ -386,6 +396,36 @@ class NoteTaker(Gtk.ApplicationWindow):
         self.autosave_timeout_id = None
         return False
 
+    def on_search_changed(self, search_entry):
+        """Triggers GTK to re-evaluate list row visibility when query changes."""
+        self.note_list_box.invalidate_filter()  
+
+    def filter_notes_by_query(self, row):
+        query = self.search_entry.get_text().strip().lower()
+        if not query:
+            return True
+        
+        label = row.get_child()
+        if not label or not isinstance(label, Gtk.Label):
+            return True
+    
+        note_title = label.get_text()
+        
+        # 1. Title match
+        if query in note_title.lower():
+            return True
+            
+        # 2. Body text match (Disk lookup)
+        file_path = os.path.join(self.notes_folder, f"{note_title}.md")
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as file:
+                    content = file.read().lower()
+                    return query in content
+            except Exception:
+                pass
+            
+        return False
 
 def on_activate(app):
     win = NoteTaker(application=app)

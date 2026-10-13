@@ -116,6 +116,10 @@ class NoteTaker(Gtk.ApplicationWindow):
         if not os.path.exists(self.notes_folder):
             os.makedirs(self.notes_folder)
 
+        self.images_folder = os.path.join(self.notes_folder, "images")
+        if not os.path.exists(self.images_folder):
+            os.makedirs(self.images_folder)
+
         # Keyboard Shortcut Controller
         key_controller = Gtk.EventControllerKey()
         key_controller.connect("key-pressed", self.on_key_pressed)
@@ -182,6 +186,9 @@ class NoteTaker(Gtk.ApplicationWindow):
         self.text_view = Gtk.TextView()
         self.text_view.set_wrap_mode(Gtk.WrapMode.WORD)
         self.text_view.get_buffer().connect('changed', self.on_text_changed)
+
+        self.text_view.connect("paste-clipboard", self.on_paste_clipboard)
+        
         self.scrolled_editor.set_child(self.text_view)
 
         # Right Side: WebKit Renderer
@@ -236,18 +243,6 @@ class NoteTaker(Gtk.ApplicationWindow):
             raw_text
         )
 
-    def on_key_pressed(self, controller, keyval, keycode, state):
-        is_ctrl = (state & Gdk.ModifierType.CONTROL_MASK) != 0
-        if is_ctrl:
-            key_name = Gdk.keyval_name(keyval)
-            if key_name == "s":
-                self.on_save_clicked(None)
-                return True
-            elif key_name == "n":
-                self.on_new_note_clicked(None)
-                return True
-        return False
-
     def _on_scroll_pos_retrieved(self, web_view, result, raw_text):
         try:
             js_value = web_view.evaluate_javascript_finish(result)
@@ -256,7 +251,8 @@ class NoteTaker(Gtk.ApplicationWindow):
             scroll_pos = 0
             
         html_content = md_to_html(raw_text, scroll_pos=scroll_pos)
-        self.web_view.load_html(html_content, "file:///")
+        base_uri = f"file://{self.notes_folder}/"
+        self.web_view.load_html(html_content, base_uri)
 
     def refresh_note_list(self, keep_selected_title=None):
         self.note_list_box.disconnect_by_func(self.on_note_selected)
@@ -347,7 +343,8 @@ class NoteTaker(Gtk.ApplicationWindow):
         self.note_list_box.unselect_all()
         self.title_entry.set_text("")
         self.text_view.get_buffer().set_text("")
-        self.web_view.load_html("", "file:///")
+        base_uri = f"file://{self.notes_folder}/"
+        self.web_view.load_html("", base_uri)
         self.loading_note = False
         self.status_label.set_text("New note ready.")
 
@@ -367,7 +364,8 @@ class NoteTaker(Gtk.ApplicationWindow):
                 self.loading_note = True
                 self.title_entry.set_text("")
                 self.text_view.get_buffer().set_text("")
-                self.web_view.load_html("", "file:///")
+                base_uri = f"file://{self.notes_folder}/"
+                self.web_view.load_html("", base_uri)
                 self.loading_note = False
                 
                 self.refresh_note_list()
@@ -426,6 +424,83 @@ class NoteTaker(Gtk.ApplicationWindow):
                 pass
             
         return False
+
+    def on_key_pressed(self, controller, keyval, keycode, state):
+        is_ctrl = (state & Gdk.ModifierType.CONTROL_MASK) != 0
+        if is_ctrl:
+            key_name = Gdk.keyval_name(keyval)
+            if key_name == "s":
+                self.on_save_clicked(None)
+                return True
+            elif key_name == "n":
+                self.on_new_note_clicked(None)
+                return True
+        
+        # For text and all other keys, let GTK handle it natively
+        return False
+
+    def on_key_pressed(self, controller, keyval, keycode, state):
+        is_ctrl = (state & Gdk.ModifierType.CONTROL_MASK) != 0
+        if is_ctrl:
+            key_name = Gdk.keyval_name(keyval)
+            if key_name == "s":
+                self.on_save_clicked(None)
+                return True
+            elif key_name == "n":
+                self.on_new_note_clicked(None)
+                return True
+        return False
+
+    def on_paste_clipboard(self, text_view):
+        """Intercepts paste operations to check if an image is in the clipboard first."""
+        display = Gdk.Display.get_default()
+        if not display:
+            return False
+
+        clipboard = display.get_clipboard()
+        formats = clipboard.get_formats()
+        
+        has_image = False
+        if formats:
+            if formats.contain_gtype(Gdk.Texture.__gtype__):
+                has_image = True
+            else:
+                for mime in formats.get_mime_types():
+                    if mime.startswith("image/"):
+                        has_image = True
+                        break
+
+        if has_image:
+            # Clipboard has an image: read it and stop default text paste
+            clipboard.read_texture_async(None, self._on_texture_read_finish, None)
+            return True # Stops the signal emission (blocks raw text paste)
+
+        # If it's not an image, return False to let GTK handle standard text pasting normally
+        return False
+
+    def _on_texture_read_finish(self, clipboard, result, user_data):
+        try:
+            texture = clipboard.read_texture_finish(result)
+            if isinstance(texture, Gdk.Texture):
+                import time
+                filename = f"img_{int(time.time() * 1000)}.png"
+                file_path = os.path.join(self.images_folder, filename)
+                
+                success = texture.save_to_png(file_path)
+                if success:
+                    relative_path = f"images/{filename}"
+                    markdown_syntax = f"\n![Pasted Image]({relative_path})\n"
+                    
+                    buffer = self.text_view.get_buffer()
+                    if buffer.get_has_selection():
+                        buffer.delete_selection(True, self.text_view.get_editable())
+                    
+                    cursor_iter = buffer.get_iter_at_mark(buffer.get_insert())
+                    buffer.insert(cursor_iter, markdown_syntax)
+                    
+                    self.status_label.set_text(f"Pasted image successfully: {relative_path}")
+        except Exception as e:
+            self.status_label.set_text(f"Paste image error: {str(e)}")
 
 def on_activate(app):
     win = NoteTaker(application=app)
